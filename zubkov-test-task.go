@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"gopkg.in/redis.v5"
 	"math/rand"
@@ -28,6 +29,12 @@ const (
 func main() {
 	conn := connectRedis()
 
+	showErrors := flag.Bool("getErrors", false, "get errors")
+	if flag.Parse(); *showErrors {
+		printErrors(conn)
+		return
+	}
+
 	for {
 		switch chooseRole(conn) {
 		case master:
@@ -40,6 +47,7 @@ func main() {
 	}
 }
 
+// Establish redis connection or exit
 func connectRedis() connection {
 	opt := redis.Options{
 		Addr:     "localhost:6379",
@@ -57,6 +65,32 @@ func connectRedis() connection {
 	return conn
 }
 
+// read errors queue and cut elements were are read
+func printErrors(conn connection) {
+	lines, err := conn.LRange(queueErrors, 0, -1).Result()
+	if err != nil {
+		fmt.Printf("printErrors: error redis.LRange %V\n", err)
+		return
+	}
+
+	count := int64(0)
+	for _, line := range lines {
+		fmt.Println(line)
+		count++
+	}
+
+	if count == 0 {
+		return
+	}
+
+	_, err = conn.LTrim(queueErrors, count, -1).Result()
+	if err != nil {
+		fmt.Printf("printErrors: error redis.LTrim %V\n", err)
+		return
+	}
+}
+
+// determenate instance role by setnx command
 func chooseRole(conn connection) roles {
 	res, err := conn.SetNX(masterKey, "hereiam", masterExpire).Result()
 	if err != nil {
@@ -70,7 +104,7 @@ func chooseRole(conn connection) roles {
 	return slave
 }
 
-// MASTER PART
+//if instance is a PRODUCER (master)
 func playAsMaster(conn connection) {
 	fmt.Println("play as master")
 	master := state{true}
@@ -93,6 +127,7 @@ func playAsMaster(conn connection) {
 	}
 }
 
+// choosen master must promote his right
 func confirmMaster(conn connection, master *state) {
 	for {
 		if master.isAlive() == false {
@@ -120,6 +155,7 @@ func confirmMaster(conn connection, master *state) {
 	}
 }
 
+// increase producer ownership ttl
 func extendMasterTime(conn connection) bool {
 	res, err := conn.Expire(masterKey, masterExpire).Result()
 	if err != nil {
@@ -129,6 +165,7 @@ func extendMasterTime(conn connection) bool {
 	return res
 }
 
+// generate some task for consumers
 func produceTask(conn connection) bool {
 	message := "msg " + time.Now().String()
 	res, err := conn.RPush(queueToProcess, message).Result()
@@ -140,7 +177,7 @@ func produceTask(conn connection) bool {
 	return true
 }
 
-// SLAVE PART
+// if instance is a CONSUMER (slave)
 func playAsSlave(conn connection) {
 	fmt.Println("play as slave")
 	slave := state{true}
@@ -169,9 +206,11 @@ func playAsSlave(conn connection) {
 	}
 }
 
+// if there are any error task -> save it in redis queue
 func storeErrorTask(conn connection, errorTasks *[]task) {
 	fmt.Printf("storeErrorTask: len(%d)\n", len(*errorTasks))
 	for _, task := range *errorTasks {
+		fmt.Printf("storeErrorTask: %s\n", task)
 		_, err := conn.RPush(queueErrors, string(task)).Result()
 		if err != nil {
 			fmt.Printf("storeErrorTask: redis.rpush task(%s) err(%v)\n", task, err)
@@ -182,6 +221,7 @@ func storeErrorTask(conn connection, errorTasks *[]task) {
 	*errorTasks = []task{}
 }
 
+// read task queue from redis
 func receiveTask(conn connection) (task, error) {
 	res, err := conn.BLPop(slaveWaitUntilElection, queueToProcess).Result()
 	if err != nil {
@@ -198,12 +238,12 @@ func receiveTask(conn connection) (task, error) {
 	return task(res[1]), nil
 }
 
+// make some calculations on recived task
 func proceedRecievedTask(message task, thread chan int, errorTasks *[]task) {
-	fmt.Printf("proceedRecievedTask (%s)\n", message)
 	if rand.Intn(100) <= 5 {
 		*errorTasks = append(*errorTasks, message)
 	}
-	time.Sleep(time.Millisecond * 50)
+	// time.Sleep(time.Millisecond * 50)
 	<-thread
 }
 
