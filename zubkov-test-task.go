@@ -122,7 +122,6 @@ func playAsMaster(conn connection) {
 			master.die()
 			return
 		}
-
 		// time.Sleep(time.Millisecond * 500)
 	}
 }
@@ -243,7 +242,7 @@ func proceedRecievedTask(message task, thread chan int, errorTasks *[]task) {
 	if rand.Intn(100) <= 5 {
 		*errorTasks = append(*errorTasks, message)
 	}
-	// time.Sleep(time.Millisecond * 50)
+	time.Sleep(time.Millisecond * 50)
 	<-thread
 }
 
